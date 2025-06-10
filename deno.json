@@ -1,5 +1,5 @@
 {
     "tasks": {
-      "start": "deno run --allow-net --allow-read --max-old-space-size=2048 src/index.ts"
+      "start": "deno run --allow-net --allow-read --max-old-space-size=512 src/index.ts"
     }
 }
