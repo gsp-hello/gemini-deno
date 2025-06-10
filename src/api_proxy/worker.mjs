@@ -240,7 +240,7 @@ const transformConfig = (req) => {
 
 const parseImg = async (url) => {
   let mimeType, data;
-  const maxMemory = 10 * 1024 * 1024; // 10MB (增加内存限制，应对流式处理)
+  // const maxMemory = 10 * 1024 * 1024; // 10MB (增加内存限制，应对流式处理)
   const chunkSize = 1 * 1024 * 1024; // 4KB (更小的 chunk size，更平滑的流)
   if (url.startsWith("http://") || url.startsWith("https://")) {
     try {
@@ -261,10 +261,10 @@ const parseImg = async (url) => {
           break;
         }
         const { value } = result;
-        if (receivedLength + value.length > maxMemory) {
-            console.warn("Memory limit exceeded, processing only partial data.");
-            break; // 超过 maxMemory，停止读取，返回已处理的部分
-        }
+        // if (receivedLength + value.length > maxMemory) {
+        //     console.warn("Memory limit exceeded, processing only partial data.");
+        //     break; // 超过 maxMemory，停止读取，返回已处理的部分
+        // }
         receivedLength += value.length;
         const base64Chunk = Buffer.from(value).toString("base64");
         base64String += base64Chunk;
