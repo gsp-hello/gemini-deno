@@ -240,8 +240,6 @@ const transformConfig = (req) => {
 
 const parseImg = async (url) => {
   let mimeType, data;
-  // const maxMemory = 10 * 1024 * 1024; // 10MB (增加内存限制，应对流式处理)
-  const chunkSize = 1 * 1024 * 1024; // 4KB (更小的 chunk size，更平滑的流)
   if (url.startsWith("http://") || url.startsWith("https://")) {
     try {
       const response = await fetch(url);
@@ -249,44 +247,7 @@ const parseImg = async (url) => {
         throw new Error(`${response.status} ${response.statusText} (${url})`);
       }
       mimeType = response.headers.get("content-type");
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error("Could not get reader from response body");
-      }
-      let base64String = "";
-      let receivedLength = 0;
-      while (true) {
-        const result = await reader.read();
-        if (result.done) {
-          break;
-        }
-        const { value } = result;
-        // if (receivedLength + value.length > maxMemory) {
-        //     console.warn("Memory limit exceeded, processing only partial data.");
-        //     break; // 超过 maxMemory，停止读取，返回已处理的部分
-        // }
-        receivedLength += value.length;
-        
-        // **********  关键修改  **********
-        let base64Chunk = "";
-        try {
-          // 区分环境：Node.js 或 浏览器
-          if (typeof Buffer !== 'undefined') {
-            // Node.js 环境
-            base64Chunk = Buffer.from(value).toString("base64");
-          } else {
-            // 浏览器环境
-            base64Chunk = btoa(String.fromCharCode(...value)); // 重要：可能需要拆分 value
-          }
-        } catch (base64Error) {
-          console.error("Base64 encoding error:", base64Error);
-          throw new Error("Base64 encoding failed: " + base64Error.toString());
-        }
-        // **********  关键修改  **********
-        
-        base64String += base64Chunk;
-      }
-      data = base64String;
+      data = Buffer.from(await response.arrayBuffer()).toString("base64");
     } catch (err) {
       throw new Error("Error fetching image: " + err.toString());
     }
