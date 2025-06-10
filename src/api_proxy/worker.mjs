@@ -238,8 +238,67 @@ const transformConfig = (req) => {
   return cfg;
 };
 
+// custom stream for base64 encoding
+class Base64EncodeStream extends TransformStream<Uint8Array, string> {
+    private buffer: Uint8Array;
+    private partial: number;
+    constructor() {
+        super({
+            transform: (chunk, controller) => {
+                this.processChunk(chunk, controller);
+            },
+            flush: (controller) => {
+                this.flush(controller);
+            }
+        });
+        this.buffer = new Uint8Array(3);
+        this.partial = 0;
+    }
+    private processChunk(chunk: Uint8Array, controller: TransformStreamDefaultController<string>) {
+        for (let i = 0; i < chunk.length; i++) {
+            this.buffer[this.partial++] = chunk[i];
+            if (this.partial === 3) {
+                controller.enqueue(this.encode());
+                this.partial = 0;
+            }
+        }
+    }
+    private encode(): string {
+        const a = this.buffer[0];
+        const b = this.buffer[1];
+        const c = this.buffer[2];
+        const char1 = base64Chars[a >> 2];
+        const char2 = base64Chars[((a & 0x3) << 4) | (b >> 4)];
+        const char3 = base64Chars[((b & 0xF) << 2) | (c >> 6)];
+        const char4 = base64Chars[c & 0x3F];
+        return char1 + char2 + char3 + char4;
+    }
+    private flush(controller: TransformStreamDefaultController<string>) {
+        if (this.partial > 0) {
+            let char1, char2, char3;
+            char1 = this.buffer[0];
+            char2 = this.buffer[1];
+            const base64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+            const padding = '=';
+            if (this.partial === 1) {
+                const first = base64Chars[char1 >> 2];
+                const second = base64Chars[(char1 & 0x3) << 4];
+                controller.enqueue(first + second + padding + padding);
+            } else {
+                const first = base64Chars[char1 >> 2];
+                const second = base64Chars[((char1 & 0x3) << 4) | (char2 >> 4)];
+                const third = base64Chars[(char2 & 0xF) << 2];
+                controller.enqueue(first + second + third + padding);
+            }
+        }
+    }
+}
+const base64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
 const parseImg = async (url) => {
   let mimeType, data;
+  const maxMemory = 10 * 1024 * 1024; // 10MB (增加内存限制，应对流式处理)
+  const chunkSize = 4 * 1024; // 4KB (更小的 chunk size，更平滑的流)
   if (url.startsWith("http://") || url.startsWith("https://")) {
     try {
       const response = await fetch(url);
@@ -247,7 +306,30 @@ const parseImg = async (url) => {
         throw new Error(`${response.status} ${response.statusText} (${url})`);
       }
       mimeType = response.headers.get("content-type");
-      data = Buffer.from(await response.arrayBuffer()).toString("base64");
+      if (!response.body) {
+          throw new Error("Response body is null");
+      }
+      
+      const base64Stream = new Base64EncodeStream();
+            const reader = response.body
+                .pipeThrough(base64Stream)
+                .getReader();
+      
+      let base64String = "";
+      let receivedLength = 0;
+      while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+              break;
+          }
+          if (receivedLength + value.length > maxMemory) {
+              console.warn("Memory limit exceeded, processing only partial data.");
+              break;
+          }
+          base64String += value;
+          receivedLength += value.length;
+      }
+      data = base64String;
     } catch (err) {
       throw new Error("Error fetching image: " + err.toString());
     }
