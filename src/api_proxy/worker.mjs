@@ -266,7 +266,24 @@ const parseImg = async (url) => {
         //     break; // 超过 maxMemory，停止读取，返回已处理的部分
         // }
         receivedLength += value.length;
-        const base64Chunk = Buffer.from(value).toString("base64");
+        
+        // **********  关键修改  **********
+        let base64Chunk = "";
+        try {
+          // 区分环境：Node.js 或 浏览器
+          if (typeof Buffer !== 'undefined') {
+            // Node.js 环境
+            base64Chunk = Buffer.from(value).toString("base64");
+          } else {
+            // 浏览器环境
+            base64Chunk = btoa(String.fromCharCode(...value)); // 重要：可能需要拆分 value
+          }
+        } catch (base64Error) {
+          console.error("Base64 encoding error:", base64Error);
+          throw new Error("Base64 encoding failed: " + base64Error.toString());
+        }
+        // **********  关键修改  **********
+        
         base64String += base64Chunk;
       }
       data = base64String;
