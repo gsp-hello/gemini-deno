@@ -1,5 +1,4 @@
 import { Buffer } from "node:buffer";
-import { encode } from "https://deno.land/std/encoding/base64.ts";
 
 export default {
   async fetch (request) {
@@ -241,6 +240,16 @@ const transformConfig = (req) => {
 
 const parseImg = async (url) => {
   let mimeType, data;
+
+  // 将 Uint8Array 转换为 base64 的辅助函数
+  const toBase64 = (buffer) => {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  };
   
   if (url.startsWith("http://") || url.startsWith("https://")) {
     try {
@@ -277,8 +286,8 @@ const parseImg = async (url) => {
         offset += chunk.length;
       }
 
-      // 使用 Deno 标准库进行 base64 编码
-      data = encode(combined);
+      // 使用自定义函数转换为 base64
+      data = toBase64(combined);
     } catch (err) {
       throw new Error("Error fetching image: " + err.toString());
     }
@@ -293,10 +302,11 @@ const parseImg = async (url) => {
     
     // 处理非 base64 的 Data URL
     if (!match[2]) {
+      // 将文本数据转换为 Uint8Array
       const textData = decodeURIComponent(data);
       const encoder = new TextEncoder();
       const uint8Array = encoder.encode(textData);
-      data = encode(uint8Array);
+      data = toBase64(uint8Array);
     }
   }
   return {
