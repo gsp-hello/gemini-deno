@@ -241,14 +241,38 @@ const transformConfig = (req) => {
 const parseImg = async (url) => {
   let mimeType, data;
 
-  // 将 Uint8Array 转换为 base64 的辅助函数
-  const toBase64 = (buffer) => {
-    let binary = '';
-    const bytes = new Uint8Array(buffer);
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
+  // 将 Uint8Array 分块转换为 base64 的辅助函数（内存安全）
+  const toBase64Chunked = async (reader) => {
+    const chunks = [];
+    let base64String = '';
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      // 将当前块转换为 base64
+      let chunkBase64 = '';
+      for (let i = 0; i < value.length; i += 1024 * 3) { // 3KB 块
+        const subChunk = value.subarray(i, i + 1024 * 3);
+        let binary = '';
+        for (let j = 0; j < subChunk.length; j++) {
+          binary += String.fromCharCode(subChunk[j]);
+        }
+        chunkBase64 += btoa(binary);
+      }
+      
+      // 收集块并定期清理内存
+      chunks.push(chunkBase64);
+      
+      // 定期合并块以释放内存
+      if (chunks.length > 5) {
+        base64String += chunks.join('');
+        chunks.length = 0;
+      }
     }
-    return btoa(binary);
+    
+    // 合并剩余块
+    return base64String + chunks.join('');
   };
   
   if (url.startsWith("http://") || url.startsWith("https://")) {
@@ -265,29 +289,8 @@ const parseImg = async (url) => {
         throw new Error("Response body is empty");
       }
       
-      // 分块处理流式数据
       const reader = response.body.getReader();
-      const chunks = [];
-      let totalLength = 0;
-      
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        chunks.push(value);
-        totalLength += value.length;
-      }
-      
-      // 合并分块而不复制数据
-      const combined = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-      }
-
-      // 使用自定义函数转换为 base64
-      data = toBase64(combined);
+      data = await toBase64Chunked(reader);
     } catch (err) {
       throw new Error("Error fetching image: " + err.toString());
     }
@@ -302,11 +305,19 @@ const parseImg = async (url) => {
     
     // 处理非 base64 的 Data URL
     if (!match[2]) {
-      // 将文本数据转换为 Uint8Array
       const textData = decodeURIComponent(data);
       const encoder = new TextEncoder();
       const uint8Array = encoder.encode(textData);
-      data = toBase64(uint8Array);
+      
+      // 手动转换为 base64（分块处理）
+      let binary = '';
+      for (let i = 0; i < uint8Array.length; i += 1024 * 3) {
+        const chunk = uint8Array.subarray(i, i + 1024 * 3);
+        for (let j = 0; j < chunk.length; j++) {
+          binary += String.fromCharCode(chunk[j]);
+        }
+      }
+      data = btoa(binary);
     }
   }
   return {
