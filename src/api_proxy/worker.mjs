@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { encode } from "https://deno.land/std/encoding/base64.ts";
 
 export default {
   async fetch (request) {
@@ -240,23 +241,52 @@ const transformConfig = (req) => {
 
 const parseImg = async (url) => {
   let mimeType, data;
+  
   if (url.startsWith("http://") || url.startsWith("https://")) {
     try {
       const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText} (${url})`);
       }
-      mimeType = response.headers.get("content-type");
-      data = Buffer.from(await response.arrayBuffer()).toString("base64");
+      
+      mimeType = response.headers.get("content-type") || "application/octet-stream";
+      
+      // 分块处理流式数据
+      const reader = response.body!.getReader();
+      const chunks: Uint8Array[] = [];
+      let totalLength = 0;
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        chunks.push(value);
+        totalLength += value.length;
+      }
+      
+      // 合并分块而不复制数据
+      const combined = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+      }
+      
+      data = encode(combined);
     } catch (err) {
       throw new Error("Error fetching image: " + err.toString());
     }
   } else {
     const match = url.match(/^data:(?<mimeType>.*?)(;base64)?,(?<data>.*)$/);
-    if (!match) {
+    if (!match || !match.groups) {
       throw new Error("Invalid image data: " + url);
     }
+    
     ({ mimeType, data } = match.groups);
+    // 如果 Data URL 不是 base64 格式，手动编码
+    if (!match[2]) {
+      data = btoa(unescape(encodeURIComponent(data)));
+    }
   }
   return {
     inlineData: {
