@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { existsSync, unlinkSync } from 'https://deno.land/std@0.217.0/fs/mod.ts';
+import { parse } from 'https://deno.land/std@0.217.0/flags/mod.ts';
 
 export default {
   async fetch (request) {
@@ -238,52 +240,94 @@ const transformConfig = (req) => {
   return cfg;
 };
 
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-
-const compressAndConvertToBase64 = async (url) => {
-  return new Promise((resolve, reject) => {
-    const tempFilePath = 'temp_video.mp4'; // 临时保存压缩后的视频文件
-
-    ffmpeg(url)
-      .output(tempFilePath)
-      // 压缩选项 (根据需要调整)
-      .videoCodec('libx264')
-      .size('640x360')  // 降低分辨率
-      .fps(24)           // 降低帧率
-      .videoBitrate('500k') // 降低比特率
-      .audioCodec('aac')
-      .audioBitrate('96k')
-      .on('end', () => {
-        // 压缩完成，读取文件并转换为 Base64
-        fs.readFile(tempFilePath, (err, data) => {
-          if (err) {
-            fs.unlinkSync(tempFilePath); // 删除临时文件
-            return reject(err);
-          }
-          const base64Data = data.toString('base64');
-          fs.unlinkSync(tempFilePath); // 删除临时文件
-          resolve(base64Data);
-        });
-      })
-      .on('error', (err) => {
-        fs.unlinkSync(tempFilePath); // 删除临时文件
-        reject(err);
-      })
-      .run();
+// 检查是否安装了 FFmpeg，这在 Deno 中尤其重要，因为它不会像 Node.js 那样自动管理依赖。
+const ffmpegPath = await (async () => {
+  try {
+    const p = Deno.run({
+      cmd: ['which', 'ffmpeg'],
+      stdout: 'piped',
+      stderr: 'piped',
+    });
+    const { code } = await p.status();
+    const stdout = new TextDecoder().decode(await p.output()).trim();
+    const stderr = new TextDecoder().decode(await p.stderrOutput()).trim();
+    p.close();
+    if (code === 0 && stdout) {
+      console.log(`FFmpeg found at: ${stdout}`);
+      return stdout;
+    } else {
+      console.warn(`FFmpeg not found using 'which': ${stderr}`);
+      return null;
+    }
+  } catch (error) {
+    console.error(`Error checking for FFmpeg: ${error}`);
+    return null;
+  }
+})();
+if (!ffmpegPath) {
+  console.error("FFmpeg is not installed. Please install FFmpeg and ensure it's in your PATH.");
+  Deno.exit(1);
+}
+const compressAndConvertToBase64 = async (url: string): Promise<string> => {
+  const tempFilePath = 'temp_video.mp4'; // 临时保存压缩后的视频文件
+  // 如果文件已存在，先删除它
+  if (existsSync(tempFilePath)) {
+    unlinkSync(tempFilePath);
+  }
+  const command = [
+    ffmpegPath,
+    '-i', url,
+    '-codec:v', 'libx264',
+    '-size', '640x360',
+    '-r', '24', // 帧率的标志是 -r
+    '-b:v', '500k', // 视频比特率的标志是 -b:v
+    '-codec:a', 'aac',
+    '-b:a', '96k',    // 音频比特率的标志是 -b:a
+    tempFilePath,
+  ];
+  console.log(`Executing: ${command.join(' ')}`);
+  const process = Deno.run({
+    cmd: command,
+    stdout: 'piped',
+    stderr: 'piped',
   });
+  const { code } = await process.status();
+  const rawOutput = await process.output();
+  const rawError = await process.stderrOutput();
+  const stdout = new TextDecoder().decode(rawOutput);
+  const stderr = new TextDecoder().decode(rawError);
+  console.log(`FFmpeg stdout: ${stdout}`);
+  console.error(`FFmpeg stderr: ${stderr}`);
+  process.close();
+  if (code === 0) {
+    try {
+      const data = await Deno.readFile(tempFilePath);
+      const base64Data = btoa(String.fromCharCode(...new Uint8Array(data)));
+      unlinkSync(tempFilePath);
+      return base64Data;
+    } catch (error) {
+      console.error("Error reading/encoding file:", error);
+      if (existsSync(tempFilePath)) {
+        unlinkSync(tempFilePath); // Clean up if there's an error
+      }
+      throw error;  // Re-throw for the caller to handle
+    }
+  } else {
+    if (existsSync(tempFilePath)) {
+      unlinkSync(tempFilePath); // Clean up if there's an error
+    }
+    throw new Error(`FFmpeg process failed with code ${code}: ${stderr}`);
+  }
 };
-
-const parseImg = async (url) => {
-  let mimeType = 'video/mp4'; // 假设压缩后的视频是 MP4 格式
-  let data;
-
+const parseImg = async (url: string): Promise<{ inlineData: { mimeType: string; data: string } }> => {
+  const mimeType = 'video/mp4'; // 假设压缩后的视频是 MP4 格式
+  let data: string;
   try {
     data = await compressAndConvertToBase64(url);
   } catch (err) {
-    throw new Error("Error compressing and encoding video: " + err.toString());
+    console.error("Error in compressAndConvertToBase64:", err);
+    throw new Error(`Error compressing and encoding video: ${err}`);  // Re-throw the error
   }
-
   return {
     inlineData: {
       mimeType,
