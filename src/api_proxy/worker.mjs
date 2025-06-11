@@ -241,27 +241,17 @@ const transformConfig = (req) => {
 const parseImg = async (url) => {
   let mimeType, data;
 
-  // 流式 base64 编码器
-  const streamToBase64 = async (reader) => {
-    let base64 = "";
-    const encoder = new TextEncoder();
+  // 将 Uint8Array 转换为 base64 的辅助函数（确保正确性）
+  const uint8ToBase64 = (bytes) => {
+    let binary = '';
+    const chunkSize = 8192; // 处理大数据的优化块大小
     
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      
-      // 小规模分块处理
-      for (let i = 0; i < value.length; i += 1024) {
-        const chunk = value.slice(i, i + 1024);
-        let binary = '';
-        for (let j = 0; j < chunk.length; j++) {
-          binary += String.fromCharCode(chunk[j]);
-        }
-        base64 += btoa(binary);
-      }
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode(...chunk);
     }
     
-    return base64;
+    return btoa(binary);
   };
   
   if (url.startsWith("http://") || url.startsWith("https://")) {
@@ -278,38 +268,46 @@ const parseImg = async (url) => {
         throw new Error("Response body is empty");
       }
       
-      const reader = response.body.getReader();
-      data = await streamToBase64(reader);
+      // 使用更可靠的方式读取数据
+      const blob = await response.blob();
+      const arrayBuffer = await blob.arrayBuffer();
+      const uint8Array = new Uint8Array(arrayBuffer);
+      
+      // 使用优化后的转换函数
+      data = uint8ToBase64(uint8Array);
     } catch (err) {
       throw new Error("Error fetching image: " + err.toString());
     }
   } else {
-    const match = url.match(/^data:(?<mimeType>.*?)(;base64)?,(?<data>.*)$/);
-    if (!match || !match.groups) {
+    // 更简单的 Data URL 解析
+    const commaIndex = url.indexOf(',');
+    if (commaIndex === -1) {
       throw new Error("Invalid image data: " + url);
     }
     
-    mimeType = match.groups.mimeType;
-    data = match.groups.data;
+    // 提取 MIME 类型
+    const header = url.substring(0, commaIndex);
+    const mimeMatch = header.match(/^data:(.*?)(;base64)?$/);
+    if (!mimeMatch) {
+      throw new Error("Invalid image data: " + url);
+    }
+    
+    mimeType = mimeMatch[1];
+    data = url.substring(commaIndex + 1);
     
     // 处理非 base64 的 Data URL
-    if (!match[2]) {
-      const textData = decodeURIComponent(data);
+    if (!header.includes(';base64')) {
+      // 对于文本数据，直接进行 base64 编码
+      const decodedData = decodeURIComponent(data);
       const encoder = new TextEncoder();
-      const uint8Array = encoder.encode(textData);
-      
-      // 小规模分块处理
-      let base64 = "";
-      for (let i = 0; i < uint8Array.length; i += 1024) {
-        const chunk = uint8Array.slice(i, i + 1024);
-        let binary = '';
-        for (let j = 0; j < chunk.length; j++) {
-          binary += String.fromCharCode(chunk[j]);
-        }
-        base64 += btoa(binary);
-      }
-      data = base64;
+      const uint8Array = encoder.encode(decodedData);
+      data = uint8ToBase64(uint8Array);
     }
+  }
+
+  // 验证 base64 格式
+  if (!isValidBase64(data)) {
+    throw new Error("Generated invalid base64 data");
   }
   
   return {
@@ -319,6 +317,19 @@ const parseImg = async (url) => {
     },
   };
 };
+
+// 验证 base64 格式的辅助函数
+function isValidBase64(str) {
+  try {
+    // 尝试解码验证
+    const binary = atob(str);
+    // 验证长度一致性
+    const encoded = btoa(binary);
+    return encoded === str;
+  } catch (e) {
+    return false;
+  }
+}
 
 const transformMsg = async ({ role, content }) => {
   const parts = [];
