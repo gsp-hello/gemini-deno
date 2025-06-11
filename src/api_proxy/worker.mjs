@@ -19,11 +19,6 @@ export default {
       };
       const { pathname } = new URL(request.url);
       switch (true) {
-        // 在路由处理中添加文件上传支持
-        case pathname.endsWith("/files"):
-          assert(request.method === "POST");
-          return handleFileUpload(await request.formData(), apiKey)
-            .catch(errHandler);
         case pathname.endsWith("/chat/completions"):
           assert(request.method === "POST");
           return handleCompletions(await request.json(), apiKey)
@@ -190,49 +185,6 @@ async function handleCompletions (req, apiKey) {
   return new Response(body, fixCors(response));
 }
 
-async function handleFileUpload(formData, apiKey) {
-  const file = formData.get("file");
-  const config = JSON.parse(formData.get("config") || {});
-  
-  if (!file) {
-    throw new HttpError("Missing file in upload", 400);
-  }
-
-  const response = await fetch(`${BASE_URL}/upload/${API_VERSION}/files`, {
-    method: "POST",
-    headers: makeHeaders(apiKey, {
-      "Content-Type": "multipart/form-data"
-    }),
-    body: JSON.stringify({
-      file: {
-        data: Buffer.from(await file.arrayBuffer()).toString("base64"),
-        contentType: config.mimeType || file.type
-      },
-      file_config: {
-        displayName: file.name || "uploaded_file",
-        mimeType: config.mimeType || file.type
-      }
-    })
-  });
-
-  let body = await response.text();
-  if (response.ok) {
-    const fileInfo = JSON.parse(body);
-    body = JSON.stringify({
-      id: fileInfo.name.replace("files/", ""),
-      object: "file",
-      bytes: file.size,
-      created: Math.floor(Date.now()/1000),
-      filename: file.name,
-      purpose: "assistants",
-      status: "processed",
-      uri: fileInfo.name // 格式: files/file-abc123
-    });
-  }
-  
-  return new Response(body, fixCors(response));
-}
-
 const harmCategory = [
   "HARM_CATEGORY_HATE_SPEECH",
   "HARM_CATEGORY_SEXUALLY_EXPLICIT",
@@ -286,26 +238,52 @@ const transformConfig = (req) => {
   return cfg;
 };
 
+const ffmpeg = require('fluent-ffmpeg');
+const fs = require('fs');
+
+const compressAndConvertToBase64 = async (url) => {
+  return new Promise((resolve, reject) => {
+    const tempFilePath = 'temp_video.mp4'; // 临时保存压缩后的视频文件
+
+    ffmpeg(url)
+      .output(tempFilePath)
+      // 压缩选项 (根据需要调整)
+      .videoCodec('libx264')
+      .size('640x360')  // 降低分辨率
+      .fps(24)           // 降低帧率
+      .videoBitrate('500k') // 降低比特率
+      .audioCodec('aac')
+      .audioBitrate('96k')
+      .on('end', () => {
+        // 压缩完成，读取文件并转换为 Base64
+        fs.readFile(tempFilePath, (err, data) => {
+          if (err) {
+            fs.unlinkSync(tempFilePath); // 删除临时文件
+            return reject(err);
+          }
+          const base64Data = data.toString('base64');
+          fs.unlinkSync(tempFilePath); // 删除临时文件
+          resolve(base64Data);
+        });
+      })
+      .on('error', (err) => {
+        fs.unlinkSync(tempFilePath); // 删除临时文件
+        reject(err);
+      })
+      .run();
+  });
+};
+
 const parseImg = async (url) => {
-  let mimeType, data;
-  if (url.startsWith("http://") || url.startsWith("https://")) {
-    try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText} (${url})`);
-      }
-      mimeType = response.headers.get("content-type");
-      data = Buffer.from(await response.arrayBuffer()).toString("base64");
-    } catch (err) {
-      throw new Error("Error fetching image: " + err.toString());
-    }
-  } else {
-    const match = url.match(/^data:(?<mimeType>.*?)(;base64)?,(?<data>.*)$/);
-    if (!match) {
-      throw new Error("Invalid image data: " + url);
-    }
-    ({ mimeType, data } = match.groups);
+  let mimeType = 'video/mp4'; // 假设压缩后的视频是 MP4 格式
+  let data;
+
+  try {
+    data = await compressAndConvertToBase64(url);
+  } catch (err) {
+    throw new Error("Error compressing and encoding video: " + err.toString());
   }
+
   return {
     inlineData: {
       mimeType,
@@ -316,14 +294,12 @@ const parseImg = async (url) => {
 
 const transformMsg = async ({ role, content }) => {
   const parts = [];
-  
   if (!Array.isArray(content)) {
     // system, user: string
     // assistant: string or null (Required unless tool_calls is specified.)
     parts.push({ text: content });
     return { role, parts };
   }
-  
   // user:
   // An array of content parts with a defined type.
   // Supported options differ based on the model being used to generate the response.
@@ -341,14 +317,6 @@ const transformMsg = async ({ role, content }) => {
           inlineData: {
             mimeType: "audio/" + item.input_audio.format,
             data: item.input_audio.data,
-          }
-        });
-        break;
-      case "file_uri":  // 新增文件URI支持
-        parts.push({
-          fileData: {
-            mimeType: item.file_uri.mime_type,
-            fileUri: item.file_uri.uri
           }
         });
         break;
@@ -375,12 +343,6 @@ const transformMessages = async (messages) => {
       contents.push(await transformMsg(item));
     }
   }
-
-  if (system_instruction) {
-    // 确保系统指令有文本内容
-    system_instruction.parts = system_instruction.parts || [{ text: "" }];
-  }
-  
   if (system_instruction && contents.length === 0) {
     contents.push({ role: "model", parts: { text: " " } });
   }
