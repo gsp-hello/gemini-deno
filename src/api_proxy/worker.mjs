@@ -242,17 +242,19 @@ const parseImg = async (url) => {
     let mimeType;
     let data;
 
-    // 更可靠的 base64 编码函数
     const toBase64 = (buffer) => {
         if (typeof btoa === 'function') {
+            //使用 apply 避免超出最大调用栈
             let binary = '';
             const bytes = new Uint8Array(buffer);
-            for (let i = 0; i < bytes.byteLength; i++) {
-                binary += String.fromCharCode(bytes[i]);
+            const chunkSize = 65535; // 65535 is the maximum stack size for many engines.
+            for (let i = 0; i < bytes.byteLength; i += chunkSize) {
+                const chunk = bytes.subarray(i, i + chunkSize);
+                binary += String.fromCharCode.apply(null, chunk);
             }
             return btoa(binary);
+
         } else {
-            // 兼容不支持 btoa 的环境
             return Buffer.from(buffer).toString('base64');
         }
     };
@@ -266,63 +268,60 @@ const parseImg = async (url) => {
 
             mimeType = response.headers.get("content-type") || "application/octet-stream";
 
-            // 确保响应体存在
             if (!response.body) {
                 throw new Error("Response body is empty");
             }
 
-            // 使用更可靠的流处理方式
             const reader = response.body.getReader();
-            const chunks = [];
-            let receivedBytes = 0;
-
-            while (true) {
+            let allChunks = new Uint8Array(0);
+            try {
+              while (true) {
                 const { done, value } = await reader.read();
-                if (done) break;
-                chunks.push(value);
-                receivedBytes += value.length;
+                if (done) {
+                  break;
+                }
+
+                const newAllChunks = new Uint8Array(allChunks.length + value.length);
+                newAllChunks.set(allChunks, 0);
+                newAllChunks.set(value, allChunks.length);
+                allChunks = newAllChunks;
+              }
+
+              data = toBase64(allChunks.buffer); // Pass ArrayBuffer
+            } catch (err) {
+              console.error("Error during stream processing:", err);
+              throw new Error("Error during stream processing: " + err.message);
             }
 
-            // 创建单个 ArrayBuffer 而不是 Uint8Array
-            const combinedBuffer = new ArrayBuffer(receivedBytes);
-            const combinedView = new Uint8Array(combinedBuffer);
-            let offset = 0;
-
-            for (const chunk of chunks) {
-                combinedView.set(chunk, offset);
-                offset += chunk.length;
-            }
-
-            // 使用更可靠的编码方法
-            data = toBase64(combinedBuffer);
         } catch (err) {
+            console.error("Error fetching image:", err);
             throw new Error("Error fetching image: " + err.message);
         }
     } else {
-        const match = url.match(/^data:(?<mimeType>.*?)(;base64)?,(?<data>.*)$/);
-        if (!match || !match.groups) {
-            throw new Error("Invalid image data: " + url);
-        }
-
-        mimeType = match.groups.mimeType;
-        data = match.groups.data;
-
-        // 处理非 base64 的 Data URL
-        if (!match[2]) {
-            // 更可靠的非 base64 Data URL 处理
-            try {
-                // 直接解码整个 Data URL
-                const commaIndex = url.indexOf(',');
-                const base64Data = url.substring(commaIndex + 1);
-                data = base64Data;
-            } catch (e) {
-                throw new Error("Failed to process Data URL: " + e.message);
+        try{
+            const match = url.match(/^data:(?<mimeType>.*?)(;base64)?,(?<data>.*)$/);
+            if (!match || !match.groups) {
+                throw new Error("Invalid image data: " + url);
             }
+
+            mimeType = match.groups.mimeType;
+            data = match.groups.data;
+
+            if (!match[2]) { // Handle non-base64 data URLs directly
+                const commaIndex = url.indexOf(',');
+                if (commaIndex === -1) {
+                    throw new Error("Invalid Data URL format: missing comma");
+                }
+                data = url.substring(commaIndex + 1); // Already decoded
+            }
+        } catch (e) {
+            console.error("Error processing data URL:", e);
+            throw new Error("Error processing data URL: " + e.message);
         }
     }
 
     // 验证 base64 数据格式
-    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data) && url.startsWith("data:")) {
         throw new Error("Invalid base64 format");
     }
 
@@ -333,6 +332,7 @@ const parseImg = async (url) => {
         },
     };
 };
+
 
 const transformMsg = async ({ role, content }) => {
   const parts = [];
