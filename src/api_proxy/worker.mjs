@@ -19,6 +19,11 @@ export default {
       };
       const { pathname } = new URL(request.url);
       switch (true) {
+        // 在路由处理中添加文件上传支持
+        case pathname.endsWith("/files"):
+          assert(request.method === "POST");
+          return handleFileUpload(await request.formData(), apiKey)
+            .catch(errHandler);
         case pathname.endsWith("/chat/completions"):
           assert(request.method === "POST");
           return handleCompletions(await request.json(), apiKey)
@@ -185,6 +190,49 @@ async function handleCompletions (req, apiKey) {
   return new Response(body, fixCors(response));
 }
 
+async function handleFileUpload(formData, apiKey) {
+  const file = formData.get("file");
+  const config = JSON.parse(formData.get("config") || {});
+  
+  if (!file) {
+    throw new HttpError("Missing file in upload", 400);
+  }
+
+  const response = await fetch(`${BASE_URL}/upload/${API_VERSION}/files`, {
+    method: "POST",
+    headers: makeHeaders(apiKey, {
+      "Content-Type": "multipart/form-data"
+    }),
+    body: JSON.stringify({
+      file: {
+        data: Buffer.from(await file.arrayBuffer()).toString("base64"),
+        contentType: config.mimeType || file.type
+      },
+      file_config: {
+        displayName: file.name || "uploaded_file",
+        mimeType: config.mimeType || file.type
+      }
+    })
+  });
+
+  let body = await response.text();
+  if (response.ok) {
+    const fileInfo = JSON.parse(body);
+    body = JSON.stringify({
+      id: fileInfo.name.replace("files/", ""),
+      object: "file",
+      bytes: file.size,
+      created: Math.floor(Date.now()/1000),
+      filename: file.name,
+      purpose: "assistants",
+      status: "processed",
+      uri: fileInfo.name // 格式: files/file-abc123
+    });
+  }
+  
+  return new Response(body, fixCors(response));
+}
+
 const harmCategory = [
   "HARM_CATEGORY_HATE_SPEECH",
   "HARM_CATEGORY_SEXUALLY_EXPLICIT",
@@ -268,12 +316,14 @@ const parseImg = async (url) => {
 
 const transformMsg = async ({ role, content }) => {
   const parts = [];
+  
   if (!Array.isArray(content)) {
     // system, user: string
     // assistant: string or null (Required unless tool_calls is specified.)
     parts.push({ text: content });
     return { role, parts };
   }
+  
   // user:
   // An array of content parts with a defined type.
   // Supported options differ based on the model being used to generate the response.
@@ -291,6 +341,14 @@ const transformMsg = async ({ role, content }) => {
           inlineData: {
             mimeType: "audio/" + item.input_audio.format,
             data: item.input_audio.data,
+          }
+        });
+        break;
+      case "file_uri":  // 新增文件URI支持
+        parts.push({
+          fileData: {
+            mimeType: item.file_uri.mime_type,
+            fileUri: item.file_uri.uri
           }
         });
         break;
@@ -317,6 +375,12 @@ const transformMessages = async (messages) => {
       contents.push(await transformMsg(item));
     }
   }
+
+  if (system_instruction) {
+    // 确保系统指令有文本内容
+    system_instruction.parts = system_instruction.parts || [{ text: "" }];
+  }
+  
   if (system_instruction && contents.length === 0) {
     contents.push({ role: "model", parts: { text: " " } });
   }
