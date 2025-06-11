@@ -239,100 +239,32 @@ const transformConfig = (req) => {
 };
 
 const parseImg = async (url) => {
-    let mimeType;
-    let data;
-
-    const toBase64 = (buffer) => {
-        if (typeof btoa === 'function') {
-            //使用 apply 避免超出最大调用栈
-            let binary = '';
-            const bytes = new Uint8Array(buffer);
-            const chunkSize = 65535; // 65535 is the maximum stack size for many engines.
-            for (let i = 0; i < bytes.byteLength; i += chunkSize) {
-                const chunk = bytes.subarray(i, i + chunkSize);
-                binary += String.fromCharCode.apply(null, chunk);
-            }
-            return btoa(binary);
-
-        } else {
-            return Buffer.from(buffer).toString('base64');
-        }
-    };
-
-    if (url.startsWith("http://") || url.startsWith("https://")) {
-        try {
-            const response = await fetch(url);
-            if (!response.ok) {
-                throw new Error(`${response.status} ${response.statusText} (${url})`);
-            }
-
-            mimeType = response.headers.get("content-type") || "application/octet-stream";
-
-            if (!response.body) {
-                throw new Error("Response body is empty");
-            }
-
-            const reader = response.body.getReader();
-            let allChunks = new Uint8Array(0);
-            try {
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) {
-                  break;
-                }
-
-                const newAllChunks = new Uint8Array(allChunks.length + value.length);
-                newAllChunks.set(allChunks, 0);
-                newAllChunks.set(value, allChunks.length);
-                allChunks = newAllChunks;
-              }
-
-              data = toBase64(allChunks.buffer); // Pass ArrayBuffer
-            } catch (err) {
-              console.error("Error during stream processing:", err);
-              throw new Error("Error during stream processing: " + err.message);
-            }
-
-        } catch (err) {
-            console.error("Error fetching image:", err);
-            throw new Error("Error fetching image: " + err.message);
-        }
-    } else {
-        try{
-            const match = url.match(/^data:(?<mimeType>.*?)(;base64)?,(?<data>.*)$/);
-            if (!match || !match.groups) {
-                throw new Error("Invalid image data: " + url);
-            }
-
-            mimeType = match.groups.mimeType;
-            data = match.groups.data;
-
-            if (!match[2]) { // Handle non-base64 data URLs directly
-                const commaIndex = url.indexOf(',');
-                if (commaIndex === -1) {
-                    throw new Error("Invalid Data URL format: missing comma");
-                }
-                data = url.substring(commaIndex + 1); // Already decoded
-            }
-        } catch (e) {
-            console.error("Error processing data URL:", e);
-            throw new Error("Error processing data URL: " + e.message);
-        }
+  let mimeType, data;
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText} (${url})`);
+      }
+      mimeType = response.headers.get("content-type");
+      data = Buffer.from(await response.arrayBuffer()).toString("base64");
+    } catch (err) {
+      throw new Error("Error fetching image: " + err.toString());
     }
-
-    // 验证 base64 数据格式
-    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data) && url.startsWith("data:")) {
-        throw new Error("Invalid base64 format");
+  } else {
+    const match = url.match(/^data:(?<mimeType>.*?)(;base64)?,(?<data>.*)$/);
+    if (!match) {
+      throw new Error("Invalid image data: " + url);
     }
-
-    return {
-        inlineData: {
-            mimeType,
-            data,
-        },
-    };
+    ({ mimeType, data } = match.groups);
+  }
+  return {
+    inlineData: {
+      mimeType,
+      data,
+    },
+  };
 };
-
 
 const transformMsg = async ({ role, content }) => {
   const parts = [];
