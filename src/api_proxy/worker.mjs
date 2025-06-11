@@ -250,10 +250,15 @@ const parseImg = async (url) => {
       }
       
       mimeType = response.headers.get("content-type") || "application/octet-stream";
+
+      // 确保响应体存在
+      if (!response.body) {
+        throw new Error("Response body is empty");
+      }
       
       // 分块处理流式数据
-      const reader = response.body!.getReader();
-      const chunks: Uint8Array[] = [];
+      const reader = response.body.getReader();
+      const chunks = [];
       let totalLength = 0;
       
       while (true) {
@@ -271,7 +276,8 @@ const parseImg = async (url) => {
         combined.set(chunk, offset);
         offset += chunk.length;
       }
-      
+
+      // 使用 Deno 标准库进行 base64 编码
       data = encode(combined);
     } catch (err) {
       throw new Error("Error fetching image: " + err.toString());
@@ -282,10 +288,15 @@ const parseImg = async (url) => {
       throw new Error("Invalid image data: " + url);
     }
     
-    ({ mimeType, data } = match.groups);
-    // 如果 Data URL 不是 base64 格式，手动编码
+    mimeType = match.groups.mimeType;
+    data = match.groups.data;
+    
+    // 处理非 base64 的 Data URL
     if (!match[2]) {
-      data = btoa(unescape(encodeURIComponent(data)));
+      const textData = decodeURIComponent(data);
+      const encoder = new TextEncoder();
+      const uint8Array = encoder.encode(textData);
+      data = encode(uint8Array);
     }
   }
   return {
