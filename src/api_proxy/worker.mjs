@@ -247,38 +247,7 @@ const parseImg = async (url) => {
         throw new Error(`${response.status} ${response.statusText} (${url})`);
       }
       mimeType = response.headers.get("content-type");
-      // 流式处理方案
-      const reader = response.body.getReader();
-      let base64Str = '';
-      let buffer = new Uint8Array(0); // 用于存储未处理的字节
-      
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        // 合并新数据到缓冲区
-        const newBuffer = new Uint8Array(buffer.length + value.length);
-        newBuffer.set(buffer);
-        newBuffer.set(value, buffer.length);
-        buffer = newBuffer;
-        
-        // 处理完整的3字节组（Base64编码基本单元）
-        const processableLength = Math.floor(buffer.length / 3) * 3;
-        if (processableLength > 0) {
-          const processChunk = buffer.slice(0, processableLength);
-          base64Str += Buffer.from(processChunk).toString('base64');
-          
-          // 保留未处理的字节
-          buffer = buffer.slice(processableLength);
-        }
-      }
-      
-      // 处理剩余字节（0-2个字节）
-      if (buffer.length > 0) {
-        base64Str += Buffer.from(buffer).toString('base64');
-      }
-      
-      data = base64Str;
+      data = Buffer.from(await response.arrayBuffer()).toString("base64");
     } catch (err) {
       throw new Error("Error fetching image: " + err.toString());
     }
