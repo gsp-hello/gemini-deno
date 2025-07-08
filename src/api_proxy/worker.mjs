@@ -238,7 +238,7 @@ const transformConfig = (req) => {
   return cfg;
 };
 
-const parseImg = async (url) => {
+const parseImg = async (url, video_metadata) => {
   let mimeType, data;
   if (url.startsWith("http://") || url.startsWith("https://")) {
     try {
@@ -258,12 +258,17 @@ const parseImg = async (url) => {
     }
     ({ mimeType, data } = match.groups);
   }
-  return {
-    inlineData: {
-      mimeType,
-      data,
-    },
+  const inlineData = {
+    mimeType,
+    data,
   };
+  const result = {
+    inlineData
+  };
+  if(video_metadata){
+    result.videoMetadata = video_metadata
+  }
+  return result;
 };
 
 const transformMsg = async ({ role, content }) => {
@@ -284,7 +289,7 @@ const transformMsg = async ({ role, content }) => {
         parts.push({ text: item.text });
         break;
       case "image_url":
-        parts.push(await parseImg(item.image_url.url));
+        parts.push(await parseImg(item.image_url.url, item.image_url.video_metadata));
         break;
       case "input_audio":
         parts.push({
